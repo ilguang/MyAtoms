@@ -1,0 +1,36 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+debug.log
+
+node_modules
+dist
+dist-ssr
+*.local
+data
+
+# 环境变量（含真实密钥，绝对不能提交）
+.env
+.env.local
+.env.production
+
+# Trae / VS Code IDE 内部文件（含产品需求/技术架构文档等内部草稿）
+.trae/
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vite
+
+# 临时产物
+*.tmp
