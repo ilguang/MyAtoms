@@ -9,8 +9,13 @@
  * 4. 模拟交互：逐个 click 按钮、fill 输入框、submit 表单，每次 try/catch 捕错
  * 5. 关闭浏览器（try/finally 保证清理），去重返回 bugs
  */
-import { chromium, type Page, type ConsoleMessage } from 'playwright'
+import type { Page, ConsoleMessage } from 'playwright'
 import type { BugReport } from './llm.js'
+
+// 延迟加载 playwright：模块名用变量，避免打包器/nft 静态追踪，
+// 否则会把约 18MB 的 playwright-core 打进 Vercel serverless 函数
+// （Vercel 上无 chromium，测试环节本就会跳过）。
+const PLAYWRIGHT_MODULE = 'playwright'
 
 /**
  * 用无头 chromium 真实测试一段 HTML，返回发现的问题列表。
@@ -20,6 +25,7 @@ import type { BugReport } from './llm.js'
 export async function testHTML(html: string): Promise<BugReport[] | null> {
   let browser
   try {
+    const { chromium } = await import(PLAYWRIGHT_MODULE)
     browser = await chromium.launch({ headless: true })
   } catch (e) {
     console.warn(
