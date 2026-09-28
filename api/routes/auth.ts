@@ -12,7 +12,7 @@ import {
   publicUser as toPublic,
 } from '../store.js'
 import { requireAuth, type AuthedRequest } from '../middleware/auth.js'
-import { asyncHandler } from '../asyncHandler.js'
+import { asyncHandler } from '../../shared/asyncHandler.js'
 
 const router = Router()
 

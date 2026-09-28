@@ -30,7 +30,7 @@ import {
   type BugReport,
 } from '../llm.js'
 import { testHTML, formatBugs } from '../tester.js'
-import { asyncHandler } from '../asyncHandler.js'
+import { asyncHandler } from '../../shared/asyncHandler.js'
 
 const router = Router()
 

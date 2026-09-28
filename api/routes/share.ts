@@ -3,7 +3,7 @@
  */
 import { Router, type Response, type Request } from 'express'
 import { getShareBySlug, getAppById, getProject } from '../store.js'
-import { asyncHandler } from '../asyncHandler.js'
+import { asyncHandler } from '../../shared/asyncHandler.js'
 
 const router = Router()
 
