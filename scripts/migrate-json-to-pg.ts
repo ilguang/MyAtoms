@@ -12,7 +12,7 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'crypto'
 import { fileURLToPath } from 'url'
-import { query } from '../api/db.js'
+import { query } from '../server/db.js'
 import { splitHtmlToFiles } from '../src/lib/htmlFiles.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -20,7 +20,7 @@ const DB_FILE = process.env.DATA_DIR
   ? path.join(process.env.DATA_DIR, 'db.json')
   : path.resolve(__dirname, '..', 'data', 'db.json')
 
-// 与 api/store.ts 相同的 AES-256-GCM 实现，按原始密钥参数化，便于重新加密
+// 与 server/store.ts 相同的 AES-256-GCM 实现，按原始密钥参数化，便于重新加密
 function deriveKey(raw: string): Buffer {
   const k = Buffer.alloc(32, 0)
   k.write(raw.slice(0, 32), 0, 'utf-8')

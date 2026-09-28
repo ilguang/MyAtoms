@@ -89,7 +89,7 @@ npx playwright install --with-deps chromium   # 真实测试闭环；不需要�
 
 ```bash
 npm run build
-node --experimental-strip-types api/server.ts
+node --experimental-strip-types server/server.ts
 # 或开发模式：npm run dev
 ```
 
@@ -115,7 +115,7 @@ location / {
 ### 6. PM2 守护
 
 ```bash
-pm2 start "node --experimental-strip-types api/server.ts" --name myatoms
+pm2 start "node --experimental-strip-types server/server.ts" --name myatoms
 pm2 save && pm2 startup
 ```
 
@@ -150,7 +150,7 @@ volumes:
 ```
 
 Dockerfile 参考：Node 20 + Playwright 系统依赖 + `npm run build` +
-`CMD ["node", "--experimental-strip-types", "api/server.ts"]`（完整 Dockerfile 见下方附录）。
+`CMD ["node", "--experimental-strip-types", "server/server.ts"]`（完整 Dockerfile 见下方附录）。
 
 ---
 
@@ -238,5 +238,5 @@ RUN npm run build
 
 ENV NODE_ENV=production
 EXPOSE 3001
-CMD ["node", "--experimental-strip-types", "api/server.ts"]
+CMD ["node", "--experimental-strip-types", "server/server.ts"]
 ```

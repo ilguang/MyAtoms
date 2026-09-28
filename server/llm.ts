@@ -35,7 +35,7 @@ export type Attachment =
   | { kind: 'image'; name: string; dataUrl: string }
   | { kind: 'text'; name: string; content: string }
 
-/** 测试员发现的问题（由 api/tester.ts 产出） */
+/** 测试员发现的问题（由 server/tester.ts 产出） */
 export interface BugReport {
   type: 'runtime-error' | 'console-error' | 'interaction-error'
   message: string
