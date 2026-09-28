@@ -16,62 +16,63 @@ import {
   createShare,
 } from '../store.js'
 import { requireAuth, type AuthedRequest } from '../middleware/auth.js'
+import { asyncHandler } from '../asyncHandler.js'
 
 const router = Router()
 
 router.use(requireAuth)
 
 // 列表
-router.get('/', (req: AuthedRequest, res: Response): void => {
-  const projects = listProjects(req.userId as string)
+router.get('/', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const projects = await listProjects(req.userId as string)
   res.json({ success: true, projects })
-})
+}))
 
 // 新建
-router.post('/', (req: AuthedRequest, res: Response): void => {
+router.post('/', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
   const { name, description } = req.body || {}
-  const project = createProject(
+  const project = await createProject(
     req.userId as string,
     typeof name === 'string' ? name : '',
     typeof description === 'string' ? description : '',
   )
   res.status(201).json({ success: true, project })
-})
+}))
 
 // 详情
-router.get('/:id', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.get('/:id', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
   }
   res.json({ success: true, project })
-})
+}))
 
 // 删除
-router.delete('/:id', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.delete('/:id', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
   }
-  deleteProject(req.params.id)
+  await deleteProject(req.params.id)
   res.json({ success: true })
-})
+}))
 
 // 消息列表
-router.get('/:id/messages', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.get('/:id/messages', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
   }
-  res.json({ success: true, messages: listMessages(req.params.id) })
-})
+  res.json({ success: true, messages: await listMessages(req.params.id) })
+}))
 
 // 追加消息（支持批量）
-router.post('/:id/messages', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.post('/:id/messages', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
@@ -89,14 +90,14 @@ router.post('/:id/messages', (req: AuthedRequest, res: Response): void => {
       kind: m.kind,
       content: String(m.content),
     }))
-  const created = addMessages(req.params.id, inputs)
-  if (created.length > 0) touchProject(req.params.id)
+  const created = await addMessages(req.params.id, inputs)
+  if (created.length > 0) await touchProject(req.params.id)
   res.status(201).json({ success: true, messages: created })
-})
+}))
 
 // 保存生成的应用
-router.post('/:id/apps', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.post('/:id/apps', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
@@ -117,41 +118,41 @@ router.post('/:id/apps', (req: AuthedRequest, res: Response): void => {
         )
         .map((f) => ({ path: f.path, content: f.content }))
     : undefined
-  const app = saveApp(
+  const app = await saveApp(
     req.params.id,
     typeof name === 'string' ? name : '',
     code,
     validFiles,
   )
-  touchProject(req.params.id)
+  await touchProject(req.params.id)
   res.status(201).json({ success: true, app })
-})
+}))
 
 // 获取最新应用
-router.get('/:id/apps/latest', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.get('/:id/apps/latest', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
   }
-  const app = getLatestApp(req.params.id)
+  const app = await getLatestApp(req.params.id)
   res.json({ success: true, app: app || null })
-})
+}))
 
 // 生成分享链接
-router.post('/:id/share', (req: AuthedRequest, res: Response): void => {
-  const project = getProject(req.params.id)
+router.post('/:id/share', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  const project = await getProject(req.params.id)
   if (!project || project.userId !== req.userId) {
     res.status(404).json({ success: false, error: '项目不存在' })
     return
   }
-  const app = getLatestApp(req.params.id)
+  const app = await getLatestApp(req.params.id)
   if (!app) {
     res.status(400).json({ success: false, error: '请先生成应用再分享' })
     return
   }
-  const share = createShare(req.params.id, app.id)
+  const share = await createShare(req.params.id, app.id)
   res.status(201).json({ success: true, slug: share.slug })
-})
+}))
 
 export default router

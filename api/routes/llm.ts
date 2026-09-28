@@ -30,6 +30,7 @@ import {
   type BugReport,
 } from '../llm.js'
 import { testHTML, formatBugs } from '../tester.js'
+import { asyncHandler } from '../asyncHandler.js'
 
 const router = Router()
 
@@ -46,26 +47,26 @@ const PRESETS: { name: string; baseUrl: string; model: string; docUrl: string }[
 ]
 
 // 读取全部配置条目（脱敏）+ 当前生效 id
-router.get('/configs', (req: AuthedRequest, res: Response): void => {
-  res.json({ success: true, ...listLLMConfigs(req.userId as string) })
-})
+router.get('/configs', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
+  res.json({ success: true, ...(await listLLMConfigs(req.userId as string)) })
+}))
 
 // 新增配置条目
-router.post('/configs', (req: AuthedRequest, res: Response): void => {
+router.post('/configs', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
   const { baseUrl, model, apiKey } = req.body || {}
   if (typeof baseUrl !== 'string' || typeof model !== 'string' || typeof apiKey !== 'string') {
     res.status(400).json({ success: false, error: 'baseUrl / model / apiKey 必须为字符串' })
     return
   }
   try {
-    res.status(201).json({ success: true, ...addLLMConfig(req.userId as string, { baseUrl, model, apiKey }) })
+    res.status(201).json({ success: true, ...(await addLLMConfig(req.userId as string, { baseUrl, model, apiKey })) })
   } catch (e) {
     res.status(400).json({ success: false, error: e instanceof Error ? e.message : '保存失败' })
   }
-})
+}))
 
 // 编辑配置条目（apiKey 留空/不传表示保留原 Key）
-router.put('/configs/:id', (req: AuthedRequest, res: Response): void => {
+router.put('/configs/:id', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
   const { baseUrl, model, apiKey } = req.body || {}
   const update: { baseUrl?: string; model?: string; apiKey?: string } = {}
   if (typeof baseUrl === 'string') update.baseUrl = baseUrl
@@ -76,29 +77,29 @@ router.put('/configs/:id', (req: AuthedRequest, res: Response): void => {
     return
   }
   try {
-    res.json({ success: true, ...updateLLMConfig(req.userId as string, req.params.id, update) })
+    res.json({ success: true, ...(await updateLLMConfig(req.userId as string, req.params.id, update)) })
   } catch (e) {
     res.status(400).json({ success: false, error: e instanceof Error ? e.message : '保存失败' })
   }
-})
+}))
 
 // 删除配置条目
-router.delete('/configs/:id', (req: AuthedRequest, res: Response): void => {
+router.delete('/configs/:id', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
   try {
-    res.json({ success: true, ...deleteLLMConfig(req.userId as string, req.params.id) })
+    res.json({ success: true, ...(await deleteLLMConfig(req.userId as string, req.params.id)) })
   } catch (e) {
     res.status(400).json({ success: false, error: e instanceof Error ? e.message : '删除失败' })
   }
-})
+}))
 
 // 设为当前生效条目（工作台快速切换模型）
-router.put('/configs/:id/activate', (req: AuthedRequest, res: Response): void => {
+router.put('/configs/:id/activate', asyncHandler(async (req: AuthedRequest, res: Response): Promise<void> => {
   try {
-    res.json({ success: true, ...activateLLMConfig(req.userId as string, req.params.id) })
+    res.json({ success: true, ...(await activateLLMConfig(req.userId as string, req.params.id)) })
   } catch (e) {
     res.status(400).json({ success: false, error: e instanceof Error ? e.message : '切换失败' })
   }
-})
+}))
 
 // 预设列表
 router.get('/presets', (_req: AuthedRequest, res: Response): void => {
@@ -170,7 +171,13 @@ router.post('/generate', async (req: AuthedRequest, res: Response): Promise<void
     res.status(400).json({ success: false, error: 'prompt 不能为空' })
     return
   }
-  const cfg = getActiveDecryptedLLMConfig(req.userId as string)
+  let cfg
+  try {
+    cfg = await getActiveDecryptedLLMConfig(req.userId as string)
+  } catch (e) {
+    res.status(500).json({ success: false, error: e instanceof Error ? e.message : '服务异常' })
+    return
+  }
   if (!cfg) {
     res.status(400).json({ success: false, error: '请先在「设置」页配置 LLM API Key' })
     return
@@ -206,16 +213,23 @@ router.post('/generate', async (req: AuthedRequest, res: Response): Promise<void
     }
 
     // ===== 阶段 2+：测试 → 修复 循环 =====
+    // testHTML 返回 null 表示当前环境没有 chromium（如 Vercel），直接跳过测试
     let bugsFixed = 0
     let tested = false
     for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
       writeSSE(res, { type: 'phase', phase: 'testing' })
-      let bugs: BugReport[] = []
+      let bugs: BugReport[]
       try {
-        bugs = await testHTML(currentHtml)
+        const result = await testHTML(currentHtml)
+        if (result === null) {
+          // 当前环境无 chromium（如 Vercel），跳过测试环节直接完成
+          break
+        }
+        bugs = result
       } catch (e) {
-        // 测试员自身出错（如 chromium 未安装），记为一条 bug 不阻塞流程
-        bugs = [{ type: 'runtime-error', message: `测试员执行失败：${e instanceof Error ? e.message : String(e)}` }]
+        // 测试器自身异常（非浏览器缺失）：不阻塞产出，跳过剩余测试
+        console.warn('[generate] testHTML 异常，跳过测试：', e)
+        break
       }
       tested = true
       writeSSE(res, { type: 'test-result', bugs })
@@ -280,12 +294,24 @@ router.post('/fix', async (req: AuthedRequest, res: Response): Promise<void> => 
     res.status(400).json({ success: false, error: 'bug 描述不能为空' })
     return
   }
-  const app = getLatestApp(projectId)
+  let app
+  try {
+    app = await getLatestApp(projectId)
+  } catch (e) {
+    res.status(500).json({ success: false, error: e instanceof Error ? e.message : '服务异常' })
+    return
+  }
   if (!app) {
     res.status(400).json({ success: false, error: '该项目还没有应用，请先生成' })
     return
   }
-  const cfg = getActiveDecryptedLLMConfig(req.userId as string)
+  let cfg
+  try {
+    cfg = await getActiveDecryptedLLMConfig(req.userId as string)
+  } catch (e) {
+    res.status(500).json({ success: false, error: e instanceof Error ? e.message : '服务异常' })
+    return
+  }
   if (!cfg) {
     res.status(400).json({ success: false, error: '请先在「设置」页配置 LLM API Key' })
     return

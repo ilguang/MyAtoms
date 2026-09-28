@@ -1,14 +1,16 @@
 /**
- * 轻量 JSON 文件数据库：进程内缓存 + 原子写入。
- * 数据目录可通过环境变量 DATA_DIR 指定（本地默认为项目根目录 /data）。
+ * PostgreSQL 数据访问层：
+ * - 单例连接池（适配 Vercel Serverless 冷启动复用）
+ * - 首次查询时自动建表（CREATE TABLE IF NOT EXISTS）
+ *
+ * 必需环境变量 DATABASE_URL（Neon / 自建 Postgres 均可）。
+ * 本地连接不启用 SSL；云端连接默认启用 SSL（Neon 要求）。
  */
-import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
+import pg from 'pg'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '..', 'data')
-const DB_FILE = path.join(DATA_DIR, 'db.json')
+const { Pool } = pg
+
+// ---------- 领域类型（与旧 JSON 结构同构，供 store 层使用） ----------
 
 export interface LLMConfigRecord {
   /** 配置条目唯一 id */
@@ -27,12 +29,8 @@ export interface UserRecord {
   passwordHash: string
   salt: string
   createdAt: number
-  /** 用户的多个 LLM 配置（每个对应一个供应商/模型 + 独立 API Key） */
-  llmConfigs?: LLMConfigRecord[]
-  /** 当前生效的配置条目 id；null/空数组表示未配置 */
-  activeLLMId?: string | null
-  /** @deprecated 旧版单条配置，读取时惰性迁移到 llmConfigs */
-  llmConfig?: LLMConfigRecord
+  /** 当前生效的 LLM 配置条目 id；null 表示未配置 */
+  activeLLMId: string | null
 }
 
 export interface SessionRecord {
@@ -74,10 +72,9 @@ export interface AppRecord {
   projectId: string
   name: string
   code: string
+  files: AppFile[]
   version: number
   createdAt: number
-  /** 编辑器多文件视图；旧数据可能缺省，由 store 现场拆分兜底 */
-  files?: AppFile[]
 }
 
 export interface ShareRecord {
@@ -87,45 +84,251 @@ export interface ShareRecord {
   createdAt: number
 }
 
-export interface DB {
-  users: UserRecord[]
-  sessions: SessionRecord[]
-  projects: ProjectRecord[]
-  messages: MessageRecord[]
-  apps: AppRecord[]
-  shares: ShareRecord[]
-}
+// ---------- 连接池 ----------
 
-const EMPTY: DB = {
-  users: [],
-  sessions: [],
-  projects: [],
-  messages: [],
-  apps: [],
-  shares: [],
-}
+let pool: pg.Pool | null = null
 
-let cache: DB | null = null
-
-export function readDB(): DB {
-  if (cache) return cache
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8')
-      cache = { ...EMPTY, ...(JSON.parse(raw) as Partial<DB>) }
-    } else {
-      cache = { ...EMPTY }
-    }
-  } catch {
-    cache = { ...EMPTY }
+function getPool(): pg.Pool {
+  if (pool) return pool
+  const connectionString = process.env.DATABASE_URL
+  if (!connectionString) {
+    throw new Error(
+      '未配置 DATABASE_URL 环境变量，无法连接数据库。请在 .env（本地）或 Vercel 环境变量中配置 Postgres 连接串。',
+    )
   }
-  return cache
+  const isLocal = /(^|@)(localhost|127\.0\.0\.1)(:|\/)/.test(connectionString)
+  pool = new Pool({
+    connectionString,
+    max: 5,
+    ssl: isLocal ? undefined : { rejectUnauthorized: false },
+  })
+  return pool
 }
 
-export function writeDB(db: DB): void {
-  cache = db
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true })
-  const tmp = `${DB_FILE}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf-8')
-  fs.renameSync(tmp, DB_FILE)
+// ---------- 自动建表（冷启动时执行一次） ----------
+
+let schemaPromise: Promise<void> | null = null
+
+async function ensureSchema(): Promise<void> {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      const p = getPool()
+      await p.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          salt TEXT NOT NULL,
+          created_at BIGINT NOT NULL,
+          active_llm_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          token TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at BIGINT NOT NULL,
+          expires_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
+        CREATE TABLE IF NOT EXISTS messages (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS apps (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          code TEXT NOT NULL,
+          files JSONB NOT NULL DEFAULT '[]',
+          version INT NOT NULL,
+          created_at BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_apps_project_version ON apps(project_id, version DESC);
+        CREATE TABLE IF NOT EXISTS shares (
+          slug TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          app_id TEXT NOT NULL,
+          created_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS llm_configs (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          base_url TEXT NOT NULL,
+          model TEXT NOT NULL,
+          api_key_enc TEXT NOT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          UNIQUE(user_id, base_url, model)
+        );
+      `)
+    })()
+  }
+  return schemaPromise
+}
+
+/** 统一查询入口：首次调用时保证表已建好 */
+export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
+  text: string,
+  params?: unknown[],
+): Promise<pg.QueryResult<T>> {
+  await ensureSchema()
+  return getPool().query<T>(text, params)
+}
+
+// ---------- 行映射（snake_case → camelCase） ----------
+
+type Row = pg.QueryResultRow
+
+interface UserRow {
+  id: string
+  email: string
+  password_hash: string
+  salt: string
+  created_at: string
+  active_llm_id: string | null
+}
+
+export function mapUser(r: Row): UserRecord {
+  const x = r as UserRow
+  return {
+    id: x.id,
+    email: x.email,
+    passwordHash: x.password_hash,
+    salt: x.salt,
+    createdAt: Number(x.created_at),
+    activeLLMId: x.active_llm_id,
+  }
+}
+
+interface LLMConfigRow {
+  id: string
+  base_url: string
+  model: string
+  api_key_enc: string
+  created_at: string
+  updated_at: string
+}
+
+export function mapLLMConfig(r: Row): LLMConfigRecord {
+  const x = r as LLMConfigRow
+  return {
+    id: x.id,
+    baseUrl: x.base_url,
+    model: x.model,
+    apiKeyEnc: x.api_key_enc,
+    createdAt: Number(x.created_at),
+    updatedAt: Number(x.updated_at),
+  }
+}
+
+interface ProjectRow {
+  id: string
+  user_id: string
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+}
+
+export function mapProject(r: Row): ProjectRecord {
+  const x = r as ProjectRow
+  return {
+    id: x.id,
+    userId: x.user_id,
+    name: x.name,
+    description: x.description,
+    createdAt: Number(x.created_at),
+    updatedAt: Number(x.updated_at),
+  }
+}
+
+interface MessageRow {
+  id: string
+  project_id: string
+  role: MessageRole
+  kind: MessageKind
+  content: string
+  created_at: string
+}
+
+export function mapMessage(r: Row): MessageRecord {
+  const x = r as MessageRow
+  return {
+    id: x.id,
+    projectId: x.project_id,
+    role: x.role,
+    kind: x.kind,
+    content: x.content,
+    createdAt: Number(x.created_at),
+  }
+}
+
+interface AppRow {
+  id: string
+  project_id: string
+  name: string
+  code: string
+  files: AppFile[]
+  version: number
+  created_at: string
+}
+
+export function mapApp(r: Row): AppRecord {
+  const x = r as AppRow
+  return {
+    id: x.id,
+    projectId: x.project_id,
+    name: x.name,
+    code: x.code,
+    files: Array.isArray(x.files) ? (x.files as AppFile[]) : [],
+    version: Number(x.version),
+    createdAt: Number(x.created_at),
+  }
+}
+
+interface ShareRow {
+  slug: string
+  project_id: string
+  app_id: string
+  created_at: string
+}
+
+export function mapShare(r: Row): ShareRecord {
+  const x = r as ShareRow
+  return {
+    slug: x.slug,
+    projectId: x.project_id,
+    appId: x.app_id,
+    createdAt: Number(x.created_at),
+  }
+}
+
+interface SessionRow {
+  token: string
+  user_id: string
+  created_at: string
+  expires_at: string
+}
+
+export function mapSession(r: Row): SessionRecord {
+  const x = r as SessionRow
+  return {
+    token: x.token,
+    userId: x.user_id,
+    createdAt: Number(x.created_at),
+    expiresAt: Number(x.expires_at),
+  }
 }

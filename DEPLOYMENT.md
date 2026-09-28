@@ -1,154 +1,227 @@
 # 部署指南
 
-MyAtoms 有两种部署方式：
+MyAtoms 使用 **PostgreSQL** 存储全部数据（用户、会话、项目、应用、加密的 API Key），
+本地开发和线上部署都需要准备一个数据库实例。推荐：
 
-1. **Vercel Serverless** — 零运维，`vercel` 一键部署（推荐个人用户）
-2. **自托管 Node 服务** — Docker / PM2 / systemd，适合团队内网或多实例
+- **Vercel 部署** → [Neon](https://neon.tech) 免费 Serverless Postgres（零运维）
+- **自托管** → 任意 Postgres（自建 / 云数据库 / Docker postgres）
 
 ---
 
-## 方式 A：Vercel Serverless
+## 方式 A：Vercel + Neon（推荐）
 
-### 1. 推送代码到 GitHub
+### 1. 创建 Neon 数据库（免费）
+
+1. 注册并登录 https://neon.tech
+2. **Create project**（区域选离 Vercel 近的，如 AWS APAC / Singapore）
+3. 在 **Connection Details** 里复制连接串，**选择 Pooled connection**（带 `-pooler` 主机名，适配 Serverless 短连接），形如：
+
+   ```
+   postgresql://USER:PASSWORD@ep-xxxx-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+   ```
+
+### 2. 推送代码到 GitHub
 
 ```bash
-git init
 git add .
-git commit -m "feat: initial commit"
-git remote add origin https://github.com/<你的用户名>/myatoms.git
-git push -u origin main
+git commit -m "feat: migrate storage to PostgreSQL"
+git push
 ```
 
-### 2. Vercel 导入
+### 3. Vercel 配置环境变量
 
-- 登录 https://vercel.com → Add New → Project → 选择仓库
-- 框架自动识别为 Vite，**不需要改任何 Build / Output 配置**
-- **必须配置环境变量**（见下方）
+Vercel 项目 → **Settings → Environment Variables**，添加：
 
-### 3. Vercel 环境变量
+| 变量                 | 值                                                                                    | 必填 |
+| -------------------- | ------------------------------------------------------------------------------------- | ---- |
+| `DATABASE_URL`       | Neon 的 **Pooled** 连接串                                                             | ✅   |
+| `LLM_ENCRYPTION_KEY` | 32 字节随机字符串：`node -e "console.log(crypto.randomBytes(32).toString('base64'))"` | ✅   |
 
-在 Vercel 项目 → Settings → Environment Variables 添加：
+保存后 **Redeploy**（Deployments → 最新一条 → ⋯ → Redeploy），让新环境变量生效。
 
-| 变量 | 值 | 备注 |
-|---|---|---|
-| `LLM_ENCRYPTION_KEY` | 32 字节随机字符串 | **必填**，加密所有用户 API Key |
-| `SESSION_SECRET` | 随机长字符串 | 可选，跨部署持久化会话 |
+### 4. 自动建表
 
-> ⚠️ Vercel Serverless 文件系统是**无状态的**（函数执行完即销毁）。
-> JSON 数据库存在 `/tmp` 下，实例重启即丢失。
->
-> 生产推荐：
-> - 方案 1：把 `api/store.ts` 的仓储层改成 SQLite（Vercel KV）或 PostgreSQL（Neon / Supabase）
-> - 方案 2：用 Vercel Edge Runtime + Upstash Redis
->
-> 详见「数据层替换」一节。
+无需手动建表：服务在首次请求时自动执行 `CREATE TABLE IF NOT EXISTS`。
+部署后打开站点，注册第一个账号即可验证。
 
-### 4. 域名 & HTTPS
+### 5. 关于 Playwright 真实测试
 
-- 在 Vercel → Project → Settings → Domains 绑定自定义域名
-- 自动签发 Let's Encrypt 证书，强制 HTTPS
+Vercel Serverless 没有 chromium，**自动测试环节会被跳过**（生成功能完全正常，
+日志里有 `[tester] chromium 不可用` 的 warning）。如需测试-自动修复闭环，
+用方式 B 自托管并安装 chromium。
+
+### 6. 自定义域名
+
+Settings → Domains 绑定域名，自动签发 HTTPS 证书。
 
 ---
 
-## 方式 B：自托管 Node 服务
+## 方式 B：自托管（Node 服务 / Docker）
 
-### 1. 准备
+### 1. 准备 Postgres
 
-Node.js ≥ 18，服务器能访问外网（调用 LLM + Playwright）。
+任选其一：
 
 ```bash
-git clone https://github.com/<你的用户名>/myatoms.git
-cd myatoms
-npm ci --omit=dev          # 生产只装 runtime 依赖
+# Docker 快速起一个
+docker run -d --name myatoms-pg -e POSTGRES_PASSWORD=pgpass -e POSTGRES_DB=myatoms \
+  -p 5432:5432 -v myatoms_pgdata:/var/lib/postgresql/data postgres:16
 ```
 
-### 2. 环境变量
+连接串：`postgresql://postgres:pgpass@localhost:5432/myatoms`
+
+### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`：
+填入 `DATABASE_URL` 与 `LLM_ENCRYPTION_KEY`。
+
+### 3. 安装依赖与 Playwright（可选但推荐）
 
 ```bash
-# 必填：32 字节随机
-LLM_ENCRYPTION_KEY=production-real-key-32-bytes!!
-
-# 持久化数据目录（确保进程对它有写权限）
-DATA_DIR=/var/lib/myatoms/data
-
-# 可选
-SESSION_SECRET=some-long-random-string
+npm ci
+npx playwright install --with-deps chromium   # 真实测试闭环；不需要可跳过
 ```
 
-### 3. Playwright 浏览器
+### 4. 启动
 
 ```bash
-# 仅需 chromium（测试员功能用）
-npx playwright install --with-deps chromium
-# 或者只装浏览器，不装系统依赖：
-PLAYWRIGHT_BROWSERS_PATH=/opt/playwright npx playwright install chromium
-```
-
-如果不用 Playwright 真实测试（可跳过），Playwright 会在 Playwright 未安装时优雅降级——生成仍可用，只是不会有自动测试环节。
-
-### 4. 构建 & 启动
-
-```bash
-npm run build              # tsc + Vite 构建到 dist/
+npm run build
 node --experimental-strip-types api/server.ts
-# 或用 npm 脚本：
-npm run server:dev         # nodemon 开发模式（带热重载）
+# 或开发模式：npm run dev
 ```
 
-服务同时托管前端静态资源（`dist/`）和 API（`/api/*`），访问 `http://host:3001` 即可。
+服务同时托管前端（`dist/`）与 API，访问 `http://host:3001`。
+表结构在首次请求时自动创建。
 
-### 5. 反向代理（Nginx 示例）
+### 5. Nginx 反代要点
+
+SSE 流式响应必须关缓冲，否则智能体思考过程不实时：
 
 ```nginx
-server {
-  listen 443 ssl;
-  server_name myatoms.example.com;
-
-  ssl_certificate     /etc/letsencrypt/live/myatoms.example.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/myatoms.example.com/privkey.pem;
-
-  location / {
-    proxy_pass http://127.0.0.1:3001;
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    # SSE 流式响应：必须关闭缓冲，否则 LLM 思考过程不实时
-    proxy_buffering off;
-    proxy_cache    off;
-    proxy_read_timeout 600s;   # LLM 生成 + 测试 + 修复可能耗几分钟
-  }
+location / {
+  proxy_pass http://127.0.0.1:3001;
+  proxy_http_version 1.1;
+  proxy_buffering off;
+  proxy_cache    off;
+  proxy_read_timeout 600s;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
-### 6. PM2 守护进程（可选）
+### 6. PM2 守护
 
 ```bash
-npm install -g pm2
 pm2 start "node --experimental-strip-types api/server.ts" --name myatoms
-pm2 save
-pm2 startup     # 按提示执行 systemd 注册命令
+pm2 save && pm2 startup
 ```
 
 ---
 
-## Docker 自托管
+## Docker Compose（自托管一键）
 
-### Dockerfile
+```yaml
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: pgpass
+      POSTGRES_DB: myatoms
+    volumes:
+      - myatoms_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://postgres:pgpass@db:5432/myatoms
+      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY}
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  myatoms_pgdata:
+```
+
+Dockerfile 参考：Node 20 + Playwright 系统依赖 + `npm run build` +
+`CMD ["node", "--experimental-strip-types", "api/server.ts"]`（完整 Dockerfile 见下方附录）。
+
+---
+
+## 从旧版 JSON 存储迁移（升级老用户）
+
+如果你之前跑过 JSON 文件版本（本地 `data/db.json` 里有账号/项目），
+升级到 Postgres 版后执行一次性导入（幂等，可重复跑）：
+
+```bash
+# 1. .env 配好 DATABASE_URL（指向要迁入的目标库）
+# 2. 配好新的 LLM_ENCRYPTION_KEY（随机值，之后 Vercel 用同一个）
+#    旧版本地数据是在没有 .env 时用代码内置默认密钥加密的，迁移脚本会自动
+#    用旧默认密钥解开、用新 LLM_ENCRYPTION_KEY 重新加密。
+#    若你以前自定义过密钥，用 OLD_LLM_ENCRYPTION_KEY 显式指定旧值。
+# 3. 执行
+npm run migrate
+```
+
+脚本会迁移：用户、会话、项目、消息、应用（旧应用自动拆分成 index.html/style.css/script.js
+文件结构）、分享链接、LLM 配置（旧版单条 `llmConfig` 自动升级为多配置数组）。
+
+---
+
+## 环境变量速查
+
+| 变量                     | 必填 | 说明                                                     |
+| ------------------------ | ---- | -------------------------------------------------------- |
+| `DATABASE_URL`           | ✅   | Postgres 连接串；Serverless 用 Pooled 地址               |
+| `LLM_ENCRYPTION_KEY`     | ✅   | AES-256-GCM 加密用户 API Key 的主密钥；各环境保持一致    |
+| `PORT`                   | ❌   | 自托管监听端口，默认 3001                                |
+| `NODE_ENV`               | ❌   | 设为 `production` 时错误响应不返回详细信息               |
+| `DATA_DIR`               | ❌   | 仅迁移脚本用：旧 `db.json` 所在目录                      |
+| `OLD_LLM_ENCRYPTION_KEY` | ❌   | 仅迁移脚本用：旧自定义加密密钥；不填则按代码内置开发密钥 |
+
+---
+
+## 常见问题
+
+### Q: 登录/注册返回 Server internal error？
+
+99% 是 `DATABASE_URL` 没配或连不上。检查：
+
+1. Vercel 环境变量是否在**最新一次 Deployment** 中生效（改完变量要 Redeploy）
+2. Vercel → Deployments → Functions 日志里是否有 `password authentication failed` / `ENOTFOUND`
+3. 是否误用了 Neon 的 Direct 连接串（请用带 `-pooler` 的 Pooled 串）
+
+### Q: 注册成功但刷新后掉登录？
+
+会话写在 Postgres，正常不会。若仍出现，确认不是浏览器装了清 Cookie 的插件，
+以及本地/Vercel 用的是同一个数据库。
+
+### Q: 之前配置的 LLM API Key 变成 `****` 且无法调用？
+
+`LLM_ENCRYPTION_KEY` 在各环境不一致，旧密文解不开。把所有环境改成同一个密钥，
+或直接到设置页删除旧条目重新填写。
+
+### Q: 本地开发可以不装数据库吗？
+
+不可以。直接注册一个 Neon 免费库，本地 `.env` 填线上连接串即可（延迟很低）；
+或用 Docker 起本地 Postgres。
+
+---
+
+## 附录：Dockerfile
 
 ```dockerfile
 FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Playwright 系统依赖（chromium）
+# Playwright(chromium) 运行所需系统库
 RUN apt-get update && apt-get install -y --no-install-recommends \
   libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
   libdbus-1-3 libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 \
@@ -157,100 +230,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
-
-# Playwright chromium 安装在镜像里
+RUN npm ci
 RUN npx playwright install chromium
 
 COPY . .
 RUN npm run build
 
-ENV NODE_ENV=production \
-    PORT=3001 \
-    DATA_DIR=/data \
-    LLM_ENCRYPTION_KEY=change-me-in-runtime
-
+ENV NODE_ENV=production
 EXPOSE 3001
-VOLUME ["/data"]
-
 CMD ["node", "--experimental-strip-types", "api/server.ts"]
 ```
-
-### docker-compose.yml
-
-```yaml
-services:
-  myatoms:
-    build: .
-    ports:
-      - "3001:3001"
-    environment:
-      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY}
-      SESSION_SECRET: ${SESSION_SECRET:-}
-      DATA_DIR: /data
-    volumes:
-      - myatoms_data:/data
-    restart: unless-stopped
-
-volumes:
-  myatoms_data:
-```
-
-启动：
-
-```bash
-export LLM_ENCRYPTION_KEY=$(node -e "console.log(crypto.randomBytes(32).toString('base64'))")
-docker compose up -d
-```
-
----
-
-## 数据层替换（多实例 / Serverless 场景）
-
-默认 JSON 文件存储适用于**单实例**（读-改-写天然串行）。多实例或 Vercel Serverless 需要换成数据库。
-
-改动点只有一处：`api/store.ts` 里的函数签名保持不变（`getLLMConfig` / `saveApp` / `listMessages` 等），把底层 `readDB()/writeDB()` 换成 SQLite 或 Postgres。
-
-推荐方案：
-
-| 场景 | 方案 | 改动量 |
-|---|---|---|
-| 单实例自托管 | **SQLite**（better-sqlite3） | 小，本地文件 |
-| 多实例内网 | PostgreSQL | 中 |
-| Vercel Serverless | Vercel Postgres / Neon | 中，Serverless 适配 |
-
-替换步骤（以 SQLite 为例）：
-
-```bash
-npm install better-sqlite3
-```
-
-创建 `api/sqlite.ts`，把 `readDB/writeDB` 换成 `db.prepare(...)`，然后 `store.ts` 里所有函数改用 SQLite API。其余路由、LLM 调用、前端零改动。
-
----
-
-## 环境变量速查
-
-| 变量 | 必填 | 默认值 | 说明 |
-|---|---|---|---|
-| `LLM_ENCRYPTION_KEY` | ✅ | 固定默认值（仅开发） | AES-256-GCM 加密所有用户 API Key；**生产必须改** |
-| `DATA_DIR` | ❌ | `./data`（项目根） | JSON 数据库目录 |
-| `SESSION_SECRET` | ❌ | — | 会话 token 签名密钥；省略则每次重启用户被登出 |
-| `PORT` | ❌ | `3001` | Express 监听端口（仅自托管） |
-| `NODE_ENV` | ❌ | — | 设为 `production` 关闭详细错误栈 |
-
----
-
-## 常见问题
-
-### Q: 我的 LLM 调用报 401 / 403？
-用户 API Key 可能过期了。让用户进**设置**页编辑该条目，重新填 Key 即可。
-
-### Q: Playwright 测试器跳过了？
-服务端会尝试自动安装 chromium。如果安装失败，生成流程会跳过测试直接产出 HTML，且日志里有 warning。
-
-### Q: 切换模型后 API Key 变空了？
-多配置系统里每条是独立的 `baseUrl + model + apiKey` 三元组。切换只是切 active 条目，不会影响其他条目的 Key。
-
-### Q: 数据库备份？
-直接拷贝 `DATA_DIR/db.json`（或整个目录）。JSON 格式可人工编辑，注意 `apiKeyEnc` 是密文。

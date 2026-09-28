@@ -14,15 +14,19 @@ import type { BugReport } from './llm.js'
 
 /**
  * 用无头 chromium 真实测试一段 HTML，返回发现的问题列表。
- * 若 Playwright 启动失败（如未安装 chromium），抛出带提示的错误。
+ * 返回 null 表示当前环境无法启动 chromium（如 Vercel Serverless 未安装浏览器），
+ * 调用方应跳过测试环节，而不是当成 bug。
  */
-export async function testHTML(html: string): Promise<BugReport[]> {
+export async function testHTML(html: string): Promise<BugReport[] | null> {
   let browser
   try {
     browser = await chromium.launch({ headless: true })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    throw new Error(`无法启动 chromium 浏览器：${msg}（请在项目根目录执行 npx playwright install chromium）`)
+    console.warn(
+      '[tester] chromium 不可用，跳过真实测试：',
+      e instanceof Error ? e.message : String(e),
+    )
+    return null
   }
 
   const bugs: BugReport[] = []

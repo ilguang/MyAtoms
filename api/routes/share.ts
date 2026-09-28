@@ -3,21 +3,22 @@
  */
 import { Router, type Response, type Request } from 'express'
 import { getShareBySlug, getAppById, getProject } from '../store.js'
+import { asyncHandler } from '../asyncHandler.js'
 
 const router = Router()
 
-router.get('/:slug', (req: Request, res: Response): void => {
-  const share = getShareBySlug(req.params.slug)
+router.get('/:slug', asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const share = await getShareBySlug(req.params.slug)
   if (!share) {
     res.status(404).json({ success: false, error: '分享链接不存在' })
     return
   }
-  const app = getAppById(share.appId)
+  const app = await getAppById(share.appId)
   if (!app) {
     res.status(404).json({ success: false, error: '应用不存在' })
     return
   }
-  const project = getProject(share.projectId)
+  const project = await getProject(share.projectId)
   res.json({
     success: true,
     name: app.name,
@@ -25,6 +26,6 @@ router.get('/:slug', (req: Request, res: Response): void => {
     createdAt: app.createdAt,
     projectName: project ? project.name : '',
   })
-})
+}))
 
 export default router

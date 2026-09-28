@@ -13,13 +13,13 @@
 
 ## 🧰 技术栈
 
-| 层 | 技术 |
-|---|---|
+| 层   | 技术                                                                                |
+| ---- | ----------------------------------------------------------------------------------- |
 | 前端 | React 18 · TypeScript · Vite · TailwindCSS · Zustand · React Router · Monaco Editor |
-| 后端 | Express 4（ESM + TSX）· 自托管 Vite 产物 |
-| 数据 | 自研轻量 JSON 文件存储（原子写入 + 进程内缓存） |
-| 测试 | Playwright chromium 无头浏览器 |
-| 部署 | Vercel（Serverless）或任意 Node 托管 |
+| 后端 | Express 4（ESM + TSX）· 自托管 Vite 产物                                            |
+| 数据 | PostgreSQL（Neon 等云库或自建；首次请求自动建表）                                   |
+| 测试 | Playwright chromium 无头浏览器（未安装时自动跳过）                                  |
+| 部署 | Vercel（Serverless）或任意 Node 托管                                                |
 
 ## 🚀 快速开始
 
@@ -37,11 +37,17 @@ npx playwright install chromium
 cp .env.example .env
 ```
 
-编辑 `.env`，**必须**设置 `LLM_ENCRYPTION_KEY`（32 字节随机字符串，用于加密存储所有用户的 API Key）：
+编辑 `.env`，**必须**设置两项：
 
 ```bash
+# 生成 LLM_ENCRYPTION_KEY 随机值（32 字节，用于加密存储所有用户的 API Key）
 node -e "console.log(crypto.randomBytes(32).toString('base64'))"
 ```
+
+- `DATABASE_URL` — PostgreSQL 连接串。没有本地 Postgres 可直接注册 [Neon](https://neon.tech) 免费库（本地 `.env` 填线上串即可），或 `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pgpass -e POSTGRES_DB=myatoms postgres:16`
+- `LLM_ENCRYPTION_KEY` — 上面命令生成的随机串
+
+表结构在服务首次请求时自动创建，无需手动建表。
 
 ### 3. 启动开发
 
@@ -73,7 +79,7 @@ npm run server:dev  # 启动 Express（同时托管 dist/ 和 /api）
 
 工作台输入框旁的模型徽章列出**已配置的全部条目**，点击即切换当前。
 
-> ⚠️ 每个条目是一组独立的 `baseUrl + model + apiKey`，加密存储在 `data/db.json` 里（已被 `.gitignore` 忽略，不会泄露）。
+> ⚠️ 每个条目是一组独立的 `baseUrl + model + apiKey`，经 AES-256-GCM 加密后存入 PostgreSQL。
 
 ## 📁 目录结构
 
@@ -81,18 +87,20 @@ npm run server:dev  # 启动 Express（同时托管 dist/ 和 /api）
 ├── api/                    Express 后端
 │   ├── index.ts            Vercel Serverless 入口
 │   ├── server.ts           自托管入口（托管 dist/ + /api）
-│   ├── db.ts               JSON 文件数据库读写
-│   ├── store.ts            数据仓储层（用户/项目/消息/LLM 配置）
+│   ├── db.ts               PostgreSQL 连接池 + 自动建表 + 行映射
+│   ├── store.ts            数据仓储层（用户/项目/消息/应用/LLM 配置）
 │   ├── llm.ts              LLM 流式调用（含智能体协作 SYSTEM_PROMPT）
-│   ├── tester.ts           Playwright 真实测试，返回 BugReport[]
-│   ├── middleware/auth.ts   JWT 会话鉴权
-│   └── routes/             Express 路由（auth / projects / llm）
+│   ├── tester.ts           Playwright 真实测试；无 chromium 时返回 null 自动跳过
+│   ├── asyncHandler.ts     async 路由错误捕获
+│   ├── middleware/auth.ts   会话鉴权
+│   └── routes/             Express 路由（auth / projects / llm / share）
+├── scripts/
+│   └── migrate-json-to-pg.ts  旧版 data/db.json → PostgreSQL 一次性迁移（npm run migrate）
 ├── src/                    前端源码
 │   ├── pages/              路由页面（Landing / Login / Projects / Workspace / Settings / Share）
 │   ├── lib/                共享模块（API 客户端、鉴权状态、类型、Monaco 配置、HTML 拆分/组装）
 │   ├── components/         UI 组件（CodePreview + Monaco 文件树、AgentAvatar、基础组件）
 │   └── main.tsx            入口
-├── data/                   JSON 数据库（运行时生成，.gitignore 忽略）
 ├── dist/                   构建产物
 ├── .env.example            环境变量模板
 ├── vercel.json             Vercel 部署配置
@@ -109,7 +117,7 @@ npm run server:dev  # 启动 Express（同时托管 dist/ 和 /api）
 
 ## 🏗️ 部署
 
-详见 [DEPLOYMENT.md](./DEPLOYMENT.md)（Vercel Serverless / 自托管 / 数据目录迁移 / 环境变量配置）。
+详见 [DEPLOYMENT.md](./DEPLOYMENT.md)（Vercel + Neon / 自托管 / 旧版 JSON 数据迁移 / 环境变量配置）。
 
 ## 🧪 本地测试
 
